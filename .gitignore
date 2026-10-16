@@ -23,3 +23,7 @@ __pycache__/
 
 # ===== 日志（真实数据快照保留）=====
 *.log
+
+# ===== GitHub Pages 发布工作副本（仅用于推送 sheep-sudo628.github.io）=====
+.gh-pages-site/
+.site-export.zip
