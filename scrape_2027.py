@@ -89,6 +89,45 @@ def table_to_records(df):
     return name, recs
 
 
+def parse_daily_tables(tables):
+    """新版中公日报表(9列, 末行'汇总') -> (provinces, summary, asof)
+    页面按日倒序排列, 第一张即最新一日。旧版7表结构不含'汇总'行, 此处返回 None。"""
+    cols_need = ('地区', '职位数', '招考人数', '报考人数', '过审人数', '竞争比')
+    for df in tables:
+        cols = [str(c).strip() for c in df.columns]
+        if not all(c in cols for c in cols_need):
+            continue
+        idx = {c: cols.index(c) for c in cols}
+        zero_i = cols.index('无人报考职位数') if '无人报考职位数' in cols else None
+        provinces, summary, asof = [], {}, ''
+        for _, row in df.iterrows():
+            vals = row.tolist()
+            name = str(vals[idx['地区']]).strip()
+            if not name or name in ('nan', '地区'):
+                continue
+            rec = {
+                'name': name,
+                'positions': to_int(vals[idx['职位数']]),
+                'plan': to_int(vals[idx['招考人数']]),
+                'apply': to_int(vals[idx['报考人数']]),
+                'ratio': parse_ratio(vals[idx['竞争比']]),
+            }
+            if name == '汇总':
+                summary = rec
+                summary['pass'] = to_int(vals[idx['过审人数']])
+                if zero_i is not None:
+                    summary['zero_positions'] = to_int(vals[zero_i])
+                # 截至时点取自该行末列统计文标题, 如"（截至10月20日16时）"
+                m = re.search(r'(\d+)日(\d+)时', str(vals[-1]))
+                if m:
+                    asof = f'{m.group(1)}日{m.group(2)}时'
+            else:
+                provinces.append(rec)
+        if summary.get('apply'):
+            return provinces, summary, asof
+    return None
+
+
 def to_int(v):
     s = re.sub(r'[^0-9]', '', str(v))
     return int(s) if s else 0
@@ -135,8 +174,35 @@ def find_national_articles(session):
 
 
 def parse_national_article(session, url, title):
-    """解析单篇全国汇总文: 总数 + 7张统计表"""
+    """解析单篇全国汇总文: 总数 + 统计表"""
     html = get(session, url)
+    tables = pd.read_html(io.StringIO(html))
+
+    # 新版日报页: 9列表含'汇总'行, 直接取全国总数与各省数据
+    daily = parse_daily_tables(tables)
+    if daily:
+        provinces, summary, asof_d = daily
+        # 标题「N日报名X 过审Y」为权威口径(表内个别日期存在列错位, 数字不可全信)
+        tm2 = re.search(r'(\d+)日报名\s*([0-9]{3,})\s*过审\s*([0-9]{3,})', title)
+        if tm2:
+            apply_n, pass_n = int(tm2.group(2)), int(tm2.group(3))
+            asof_d = asof_d or f'{tm2.group(1)}日16时'
+        else:
+            apply_n, pass_n = summary['apply'], summary['pass']
+        return {
+            'article_url': url,
+            'article_title': title,
+            'asof': asof_d,
+            'national': {
+                'apply': apply_n, 'pass': pass_n,
+                'pend': max(apply_n - pass_n, 0),
+                'zero_positions': summary.get('zero_positions'),
+                'low_positions': None,
+            },
+            'provinces': provinces,
+            'dept_top': [], 'pos_apply_top': [], 'pos_ratio_top': [],
+            'attrs': [], 'categories': [], 'degrees': [],
+        }
 
     # 全国总数(正文优先, 标题兜底)
     def grab(pat, src=None):
@@ -164,7 +230,6 @@ def parse_national_article(session, url, title):
     tm = re.search(r'[截止]止?至\s*(\d+)日(\d+)时', src_all)
     asof = f'{tm.group(1)}日{tm.group(2)}时' if tm else ''
 
-    tables = pd.read_html(io.StringIO(html))
     bundle = {}
     for df in tables:
         if df.shape[1] != 5 or df.shape[0] < 3:
@@ -529,6 +594,7 @@ def scrape_profile_pool(session, major=PROFILE_MAJOR):
         r['exp'] = d.get('exp', '')
         r['pass'] = d.get('pass')
         r['fem'] = 1 if re.search(r'限女性|仅限女性|限女', d.get('intro', '')) else 0
+        r['mal'] = 1 if re.search(r'限男性|仅限男性|限男', d.get('intro', '')) else 0
         r['ratio'] = round(r['apply'] / r['plan'], 2) if r['plan'] else 0.0
     print(f'   画像职位池 {len(recs)} 条, 详情缓存 {len(_detail_cache)}', flush=True)
     return recs

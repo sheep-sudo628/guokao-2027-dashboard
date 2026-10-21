@@ -65,6 +65,11 @@
   .mycond .mc-fields { display:flex; gap:12px; flex-wrap:wrap; }
   .mycond .mc-fields .fi input { padding:6px 10px; border:1px solid #e5e6eb; border-radius:6px; font-size:13px; width:170px; }
   .mycond.mc-off .mc-fields { opacity:.45; pointer-events:none; }
+  .toolbar .fi input { padding:6px 10px; border:1px solid #e5e6eb; border-radius:6px; font-size:13px; min-width:240px; }
+  .dt-count { font-size:12px; color:#4e5969; margin-left:auto; padding-bottom:8px; }
+  .dt-sub { color:#86909c; font-size:12px; margin-top:2px; }
+  .dt-req { color:#86909c; font-size:12px; }
+  #dtTable tbody tr:hover { background:#fafaff; }
 </style>
 </head>
 <body>
@@ -132,12 +137,20 @@
           <option value="硕士研究生">硕士研究生</option>
           <option value="">不限</option>
         </select></div>
-      <div class="fi"><label>考生身份</label>
+      <div class="fi"><label>是否应届</label>
         <select id="mcFresh">
-          <option value="1" selected>2027应届（基层年限不限）</option>
-          <option value="">不限</option>
+          <option value="1" selected>是（2027应届毕业生）</option>
+          <option value="">否（社会人员）</option>
         </select></div>
-      <div class="fi"><label>性别（按职位简介近似）</label>
+      <div class="fi"><label>基层工作最低年限（年限 ≤ 此值可报）</label>
+        <select id="mcYears">
+          <option value="0" selected>0 年（应届 / 无基层经历）</option>
+          <option value="1">1 年</option>
+          <option value="2">2 年</option>
+          <option value="3">3 年</option>
+          <option value="5">5 年及以上</option>
+        </select></div>
+      <div class="fi"><label>性别（按职位说明匹配）</label>
         <select id="mcSex">
           <option value="男" selected>男</option>
           <option value="女">女</option>
@@ -162,6 +175,28 @@
       <tbody></tbody>
     </table></div>
   </div>
+</div>
+
+<div class="section">
+  <div class="section-title">我的条件 · 可报职位明细<span class="src">逐职位显示当前报名人数 · 条件实时取自上方「我的条件」面板；数据源：中公教育职位库（按专业「电子信息类」检索的职位池）。注：该职位库无性别栏，仅在职位说明注明「限男性/限女性」时性别筛选才生效。</span></div>
+  <div class="toolbar">
+    <div class="fi" style="flex:1"><label>关键词（部门 / 职位 / 地区 / 职位代码）</label><input id="dtKw" placeholder="如：税务局、淮北市、300110124009"></div>
+    <div class="fi"><label>排序</label>
+      <select id="dtSort">
+        <option value="apply" selected>报名人数 从高到低</option>
+        <option value="ratio">竞争比 从高到低</option>
+        <option value="plan">招录人数 从多到少</option>
+        <option value="applyAsc">报名人数 从低到高（冷门）</option>
+      </select></div>
+    <div class="fi"><label>&nbsp;</label><button class="mc-btn" id="dtClear">清空关键词</button></div>
+    <div class="dt-count" id="dtCount"></div>
+  </div>
+  <div class="twrap"><table id="dtTable">
+    <thead><tr><th>#</th><th>部门 / 职位</th><th>地区</th>
+      <th class="num">招录</th><th class="num">报名</th><th class="num">过审</th><th class="num">竞争比</th><th>报考门槛</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <div style="text-align:center;margin-top:12px"><button class="mc-btn" id="dtMore">加载更多</button></div>
 </div>
 
 <div class="section">
@@ -304,18 +339,36 @@ function render(){
     if (userParty === '共青团员') return /共青团员|中共党员或/.test(posParty);
     return posParty.includes(userParty);
   }
+  /* 基层工作最低年限: 职位要求年数 */
+  function expYears(exp){
+    exp = exp || '';
+    if (!exp || /无限制|不限/.test(exp)) return 0;
+    if (/五|5/.test(exp)) return 5;
+    if (/四|4/.test(exp)) return 4;
+    if (/三|3/.test(exp)) return 3;
+    if (/二|两|2/.test(exp)) return 2;
+    if (/一|1/.test(exp)) return 1;
+    return 0;
+  }
+  /* 我的基层年限: 应届恒为0, 否则取所选年数; 返回null表示不限 */
+  function myYears(){
+    if (mc$('mcFresh').value === '1') return 0;
+    const v = mc$('mcYears').value;
+    return v === '' ? null : parseInt(v, 10);
+  }
   function filterPool(){
     const major = mc$('mcMajor').value.trim();
     const party = mc$('mcParty').value;
     const edu = mc$('mcEdu').value;
-    const fresh = mc$('mcFresh').value;
     const sex = mc$('mcSex').value;
+    const years = myYears();
     return pool.filter(r => {
       if (major && !(r.major || '').includes(major)) return false;
       if (party && !partyOk(r.party, party)) return false;
       if (edu && !eduOk(r.edu, edu)) return false;
-      if (fresh && !/无限制/.test(r.exp || '')) return false;
-      if (sex === '男' && r.fem) return false;   // 数据源无性别字段: 按职位简介"限女性"近似排除
+      if (years !== null && expYears(r.exp) > years) return false;
+      if (sex === '男' && r.fem) return false;   // 限女性职位男性不可报
+      if (sex === '女' && r.mal) return false;   // 限男性职位女性不可报
       return true;
     });
   }
@@ -331,6 +384,56 @@ function render(){
     const apply = rows.reduce((s,r)=>s+(r.apply||0), 0);
     mc$('mcCount').textContent = '符合 ' + rows.length + ' 个职位 · 招录 ' + num(plan)
       + ' 人 · 已报考 ' + num(apply) + ' 人' + (mc$('mcOn').checked ? '' : '（未启用）');
+  }
+
+  /* 我的条件 · 可报职位明细 */
+  let dtLimit = 50;
+  const dt$ = id => document.getElementById(id);
+  function drawDetail(reset){
+    const tb = document.querySelector('#dtTable tbody');
+    if (!pool){
+      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#86909c;padding:30px">职位池未就绪，等待下次抓取</td></tr>';
+      dt$('dtCount').textContent = '';
+      dt$('dtMore').style.display = 'none';
+      return;
+    }
+    if (reset) dtLimit = 50;
+    let rows = mcOn() ? filterPool() : pool.slice();
+    const kw = (dt$('dtKw').value || '').trim().toLowerCase();
+    if (kw){
+      rows = rows.filter(r => [r.bureau, r.dept, r.position, r.code, r.region, r.city, r.district]
+        .some(x => (x || '').toLowerCase().includes(kw)));
+    }
+    const sorters = {
+      apply: (a,b) => (b.apply||0) - (a.apply||0),
+      ratio: (a,b) => (b.ratio||0) - (a.ratio||0),
+      plan: (a,b) => (b.plan||0) - (a.plan||0),
+      applyAsc: (a,b) => (a.apply||0) - (b.apply||0)
+    };
+    rows = rows.slice().sort(sorters[dt$('dtSort').value] || sorters.apply);
+    const plan = rows.reduce((s,r)=>s+(r.plan||0), 0);
+    const apply = rows.reduce((s,r)=>s+(r.apply||0), 0);
+    dt$('dtCount').textContent = '可报 ' + num(rows.length) + ' 个职位 · 招录 ' + num(plan)
+      + ' 人 · 累计报名 ' + num(apply) + ' 人';
+    const show = rows.slice(0, dtLimit);
+    tb.innerHTML = show.map((r,i) =>
+      '<tr>'
+      + '<td>' + (i+1) + '</td>'
+      + '<td><div>' + esc(r.bureau || r.dept) + '</div>'
+        + '<div class="dt-sub">' + esc(r.position) + '　' + esc(r.code) + '</div></td>'
+      + '<td>' + esc([r.region, r.city, r.district].filter(Boolean).join(' · ')) + '</td>'
+      + '<td class="num">' + num(r.plan) + '</td>'
+      + '<td class="num" style="font-weight:600;color:#f5222d">' + num(r.apply) + '</td>'
+      + '<td class="num">' + num(r.pass) + '</td>'
+      + '<td class="num">' + (r.ratio != null ? r.ratio + ':1' : '-') + '</td>'
+      + '<td class="dt-req">' + esc(r.edu || '不限') + ' · 基层' + esc(r.exp || '无限制')
+        + ' · ' + esc(r.party || '不限')
+        + (r.fem ? ' · 限女性' : '') + (r.mal ? ' · 限男性' : '')
+        + '<br>专业：' + esc((r.major || '').slice(0, 60)) + '</td>'
+      + '</tr>'
+    ).join('') || '<tr><td colspan="8" style="text-align:center;color:#86909c;padding:30px">没有符合当前条件的职位，可放宽「我的条件」后重试</td></tr>';
+    dt$('dtMore').style.display = rows.length > dtLimit ? 'inline-block' : 'none';
+    dt$('dtMore').textContent = '加载更多（剩余 ' + (rows.length - show.length) + ' 个）';
   }
 
   /* 市级下钻 */
@@ -458,24 +561,33 @@ function render(){
 
   /* 我的条件 交互 */
   ['mcParty','mcEdu','mcFresh','mcSex'].forEach(id => {
-    mc$(id).addEventListener('change', ()=>{ drawCity(); drawTopTables(); updateMcCount(); });
+    mc$(id).addEventListener('change', ()=>{ drawCity(); drawTopTables(); updateMcCount(); drawDetail(true); });
   });
-  mc$('mcMajor').addEventListener('input', ()=>{ drawCity(); drawTopTables(); updateMcCount(); });
+  mc$('mcYears').addEventListener('change', ()=>{ updateMcCount(); drawDetail(true); });
+  mc$('mcMajor').addEventListener('input', ()=>{ drawCity(); drawTopTables(); updateMcCount(); drawDetail(true); });
   mc$('mcOn').addEventListener('change', ()=>{
     mcPanel.classList.toggle('mc-off', !mc$('mcOn').checked);
-    drawCity(); drawTopTables(); updateMcCount();
+    drawCity(); drawTopTables(); updateMcCount(); drawDetail(true);
   });
   mc$('mcReset').addEventListener('click', ()=>{
     mc$('mcMajor').value = '电子信息类';
     mc$('mcParty').value = '中共党员';
     mc$('mcEdu').value = '本科';
     mc$('mcFresh').value = '1';
+    mc$('mcYears').value = '0';
     mc$('mcSex').value = '男';
     mc$('mcOn').checked = true;
     mcPanel.classList.remove('mc-off');
-    drawCity(); drawTopTables(); updateMcCount();
+    drawCity(); drawTopTables(); updateMcCount(); drawDetail(true);
   });
   updateMcCount();
+
+  /* 可报职位明细 交互 */
+  dt$('dtKw').addEventListener('input', ()=>drawDetail(true));
+  dt$('dtSort').addEventListener('change', ()=>drawDetail(true));
+  dt$('dtClear').addEventListener('click', ()=>{ dt$('dtKw').value = ''; drawDetail(true); });
+  dt$('dtMore').addEventListener('click', ()=>{ dtLimit += 50; drawDetail(false); });
+  drawDetail(true);
 
   window.addEventListener('resize', ()=>{ charts.forEach(c=>c.resize()); if(cityChart) cityChart.resize(); });
 
